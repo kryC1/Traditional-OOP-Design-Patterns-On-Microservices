@@ -1,53 +1,66 @@
-from abc import ABC, abstractmethod
-from fastapi import FastAPI
-from fastapi import HTTPException
-from common.middleware import LoggingMiddleware
-from common.models import CreateOrderRequest, OrderResponse
+from fastapi import FastAPI, HTTPException
 import httpx
 
-app = FastAPI(title="API Gateway")
-app.add_middleware(LoggingMiddleware)
+from common.models import CreateOrderRequest, OrderResponse
+from common.config import get_oop_enabled
+from common.middleware import LoggingMiddleware, install_logging_middleware
 
 ORDER_SERVICE_URL = "http://localhost:8001"
 
 
-# --- Strategy pattern for routing/policy selection ---
+def create_app() -> FastAPI:
+    oop_enabled = get_oop_enabled(default=True)
 
-class RoutingStrategy(ABC):
-    @abstractmethod
-    async def route_order(self, req: CreateOrderRequest) -> OrderResponse:
-        ...
+    app = FastAPI(title="API Gateway")
+
+    # Middleware: OOP vs procedural
+    if oop_enabled:
+        app.add_middleware(LoggingMiddleware)
+    else:
+        install_logging_middleware(app)
+
+    if oop_enabled:
+        # ---- OOP/Strategy version (your existing design) ----
+        from abc import ABC, abstractmethod
+
+        class RoutingStrategy(ABC):
+            @abstractmethod
+            async def route_order(self, req: CreateOrderRequest) -> OrderResponse:
+                ...
+
+        class SimpleRoutingStrategy(RoutingStrategy):
+            async def route_order(self, req: CreateOrderRequest) -> OrderResponse:
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(f"{ORDER_SERVICE_URL}/orders", json=req.model_dump(), timeout=5.0)
+                r.raise_for_status()
+                return OrderResponse(**r.json())
+
+        current_strategy: RoutingStrategy = SimpleRoutingStrategy()
+
+        @app.post("/checkout", response_model=OrderResponse)
+        async def checkout(req: CreateOrderRequest):
+            try:
+                return await current_strategy.route_order(req)
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail=str(e))
+
+    else:
+        # ---- Procedural version (no Strategy classes) ----
+        @app.post("/checkout", response_model=OrderResponse)
+        async def checkout(req: CreateOrderRequest):
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(
+                        f"{ORDER_SERVICE_URL}/orders",
+                        json=req.model_dump(),
+                        timeout=5.0,
+                    )
+                r.raise_for_status()
+                return OrderResponse(**r.json())
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail=str(e))
+
+    return app
 
 
-class SimpleRoutingStrategy(RoutingStrategy):
-    async def route_order(self, req: CreateOrderRequest) -> OrderResponse:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(f"{ORDER_SERVICE_URL}/orders", json=req.dict(), timeout=5.0)
-        r.raise_for_status()
-        return OrderResponse(**r.json())
-
-
-class FailingFastStrategy(RoutingStrategy):
-    """
-    Example of a strategy that refuses requests if some condition is met
-    (e.g., we detected high latency, circuit open, etc.)
-    """
-
-    async def route_order(self, req: CreateOrderRequest) -> OrderResponse:
-        # For demo, we'll just pass through; later you can add latency checks, etc.
-        async with httpx.AsyncClient() as client:
-            r = await client.post(f"{ORDER_SERVICE_URL}/orders", json=req.dict(), timeout=5.0)
-        r.raise_for_status()
-        return OrderResponse(**r.json())
-
-
-# You can change this at runtime or via env variable to simulate different strategies
-current_strategy: RoutingStrategy = SimpleRoutingStrategy()
-
-
-@app.post("/checkout", response_model=OrderResponse)
-async def checkout(req: CreateOrderRequest):
-    try:
-        return await current_strategy.route_order(req)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+app = create_app()

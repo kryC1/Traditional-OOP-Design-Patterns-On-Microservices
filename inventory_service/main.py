@@ -1,10 +1,17 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
-from common.middleware import LoggingMiddleware
+
+from common.config import get_oop_enabled
+from common.middleware import LoggingMiddleware, install_logging_middleware
 
 app = FastAPI(title="Inventory Service")
-app.add_middleware(LoggingMiddleware)
+
+# Middleware selection
+if get_oop_enabled(default=True):
+    app.add_middleware(LoggingMiddleware)
+else:
+    install_logging_middleware(app)
 
 
 class Item(BaseModel):
@@ -21,7 +28,7 @@ class InventoryCheckResponse(BaseModel):
     total_amount: float
 
 
-# hard-coded price table for demo
+# Hard-coded price table
 PRICES = {
     "p1": 10.0,
     "p2": 20.0,
@@ -33,7 +40,6 @@ PRICES = {
 def check_inventory(req: InventoryCheckRequest):
     total = 0.0
     for item in req.items:
-        price = PRICES.get(item.product_id, 0.0)
-        total += price * item.quantity
-    # always "in stock" for the demo
+        total += PRICES.get(item.product_id, 0.0) * item.quantity
+
     return InventoryCheckResponse(ok=True, total_amount=total)
